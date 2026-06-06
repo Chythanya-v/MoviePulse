@@ -8,7 +8,7 @@ export function getTMDBRatingColor(avg: number): string {
 }
 
 /** Return a 0–100 normalized score from any rating source */
-export function normalizeRating(source: string, value: string): number {
+export function normalizeRating(_source: string, value: string): number {
   const clean = value.trim();
   // "7.5/10"
   if (clean.includes('/10')) {
