@@ -3,6 +3,13 @@ import type { TMDBMovie } from '../types/movie';
 import { getTrending, searchMovies, getMoviesByProvider } from '../api';
 import { STREAMING_PROVIDERS } from '../config/providers';
 import { useDebounce } from './useDebounce';
+import { groupByPrimaryGenre } from '../utils/genres';
+
+export interface GenreGroup {
+  genreId: number;
+  genreName: string;
+  movies: TMDBMovie[];
+}
 
 interface UseMoviesOptions {
   query: string;
@@ -11,6 +18,7 @@ interface UseMoviesOptions {
 
 interface UseMoviesResult {
   movies: TMDBMovie[];
+  grouped: GenreGroup[];
   isLoading: boolean;
   error: string | null;
   page: number;
@@ -23,6 +31,7 @@ export function useMovies({ query, providerId }: UseMoviesOptions): UseMoviesRes
   const debouncedQuery = useDebounce(query, 400);
 
   const [movies, setMovies] = useState<TMDBMovie[]>([]);
+  const [grouped, setGrouped] = useState<GenreGroup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -52,17 +61,46 @@ export function useMovies({ query, providerId }: UseMoviesOptions): UseMoviesRes
             (p) => p.id === providerId,
           );
           const region = providerConfig?.watchRegion ?? 'IN';
-          result = await getMoviesByProvider(providerId, page, region);
+          
+          if (page === 1) {
+            // Fetch first 3 pages concurrently to populate genre rows with a rich selection
+            const [r1, r2, r3] = await Promise.all([
+              getMoviesByProvider(providerId, 1, region),
+              getMoviesByProvider(providerId, 2, region),
+              getMoviesByProvider(providerId, 3, region),
+            ]);
+            result = {
+              results: [...(r1.results ?? []), ...(r2.results ?? []), ...(r3.results ?? [])],
+              total_pages: r1.total_pages,
+            };
+          } else {
+            // Since page 1 already fetched pages 1, 2, and 3, page 2 should fetch page 4
+            const tmdbPage = page + 2;
+            result = await getMoviesByProvider(providerId, tmdbPage, region);
+          }
         } else {
           result = await getTrending(page);
         }
         if (!cancelled) {
-          // Sort by rating (highest first) — discover already has server-side sort,
-          // but trending and search results need client-side sort too.
-          const sorted = [...result.results].sort(
+          // Filter movies to only show those with rating >= 6.0
+          const filtered = (result.results ?? []).filter(
+            (movie) => movie.vote_average >= 6.0
+          );
+
+          // Sort by rating (highest first)
+          const sorted = [...filtered].sort(
             (a, b) => b.vote_average - a.vote_average,
           );
-          setMovies(sorted);
+
+          setMovies((prev) => {
+            const next = page === 1 ? sorted : [...prev, ...sorted];
+            // Deduplicate movies by ID to avoid duplicates and React key warnings
+            const unique = Array.from(new Map(next.map((m) => [m.id, m])).values());
+            // Update grouped based on the accumulated unique movies list to keep them in sync
+            setGrouped(groupByPrimaryGenre(unique));
+            return unique;
+          });
+
           setTotalPages(Math.min(result.total_pages, 500));
         }
       } catch (err) {
@@ -78,5 +116,5 @@ export function useMovies({ query, providerId }: UseMoviesOptions): UseMoviesRes
     return () => { cancelled = true; };
   }, [debouncedQuery, providerId, page, refreshKey]);
 
-  return { movies, isLoading, error, page, totalPages, setPage, refresh };
+  return { movies, grouped, isLoading, error, page, totalPages, setPage, refresh };
 }

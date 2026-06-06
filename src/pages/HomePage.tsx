@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useMovies } from '../hooks/useMovies';
 import { STREAMING_PROVIDERS } from '../config/providers';
 import type { ProviderFilterId } from '../types/provider';
@@ -20,10 +20,40 @@ export default function HomePage() {
   const [query, setQuery] = useState('');
   const [providerId, setProviderId] = useState<ProviderFilterId>(null);
 
-  const { movies, isLoading, error, page, totalPages, setPage, refresh } = useMovies({
+  const { movies, grouped, isLoading, error, page, totalPages, setPage, refresh } = useMovies({
     query,
     providerId,
   });
+
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Setup infinite scroll observer
+  useEffect(() => {
+    if (isLoading || error || page >= totalPages) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setPage(page + 1);
+        }
+      },
+      { threshold: 0.1, rootMargin: '200px' }
+    );
+
+    const currentBottom = bottomRef.current;
+    if (currentBottom) {
+      observer.observe(currentBottom);
+    }
+
+    return () => {
+      if (currentBottom) {
+        observer.unobserve(currentBottom);
+      }
+    };
+  }, [isLoading, error, page, totalPages, setPage]);
+
+  // Group view: active when a specific provider is selected and no search query
+  const isGrouped = providerId !== null && !query.trim();
 
   const sectionTitle = query.trim()
     ? `Results for "${query.trim()}"`
@@ -74,87 +104,127 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Section Title */}
-        <section className="movies-section">
-          <div className="movies-section-header">
-            <h2 className="movies-section-title">{sectionTitle}</h2>
-            {!isLoading && !error && (
-              <span className="movies-section-count">
-                Page {page} of {totalPages}
-              </span>
+        {/* ── GENRE-GROUPED VIEW (provider selected, no search) ── */}
+        {isGrouped ? (
+          <div className="genre-sections">
+            {/* Section heading */}
+            <div className="movies-section-header genre-sections-header">
+              <h2 className="movies-section-title">{sectionTitle} — by Genre</h2>
+              {!isLoading && !error && (
+                <span className="movies-section-count">Loaded up to Page {page}</span>
+              )}
+            </div>
+
+            {/* Error */}
+            {error && (
+              <div className="error-state">
+                <p className="error-state-icon">⚠️</p>
+                <p className="error-state-message">{error}</p>
+                <button className="btn-retry" onClick={refresh}>Try Again</button>
+              </div>
             )}
-          </div>
 
-          {/* Error State */}
-          {error && (
-            <div className="error-state">
-              <p className="error-state-icon">⚠️</p>
-              <p className="error-state-message">{error}</p>
-              <button className="btn-retry" onClick={refresh}>Try Again</button>
-            </div>
-          )}
+            {/* Loading skeletons for initial load */}
+            {isLoading && page === 1 && !error && (
+              <div className="movies-grid genre-sections-skeleton">
+                {SKELETONS.map((_, i) => <SkeletonCard key={i} />)}
+              </div>
+            )}
 
-          {/* Movie Grid */}
-          {!error && (
-            <div className="movies-grid">
-              {isLoading
-                ? SKELETONS.map((_, i) => <SkeletonCard key={i} />)
-                : movies.length === 0
-                  ? (
-                    <div className="empty-state">
-                      <p className="empty-state-icon">🎬</p>
-                      <p className="empty-state-message">No movies found. Try a different search.</p>
+            {/* Genre rows */}
+            {!isLoading && page === 1 && !error && grouped.length === 0 && (
+              <div className="empty-state">
+                <p className="empty-state-icon">🎬</p>
+                <p className="empty-state-message">No movies found for this provider.</p>
+              </div>
+            )}
+
+            {grouped.map(({ genreId, genreName, movies: genreMovies }) => (
+              <section key={genreId} className="genre-row-section">
+                <div className="genre-row-header">
+                  <h3 className="genre-row-title">
+                    <span className="genre-row-pill">{genreName}</span>
+                  </h3>
+                  <span className="genre-row-count">{genreMovies.length} film{genreMovies.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="genre-row-scroll" role="list" aria-label={`${genreName} movies`}>
+                  {genreMovies.map((movie) => (
+                    <div key={movie.id} className="genre-row-item" role="listitem">
+                      <MovieCard movie={movie} />
                     </div>
-                  )
-                  : movies.map((movie) => <MovieCard key={movie.id} movie={movie} />)
-              }
-            </div>
-          )}
+                  ))}
+                </div>
+              </section>
+            ))}
 
-          {/* Pagination */}
-          {!isLoading && !error && totalPages > 1 && (
-            <div className="pagination">
-              <button
-                id="pagination-prev"
-                className="pagination-btn"
-                onClick={() => setPage(Math.max(1, page - 1))}
-                disabled={page === 1}
-                aria-label="Previous page"
-              >
-                ← Prev
-              </button>
-
-              <div className="pagination-pages">
-                {getPaginationRange(page, totalPages).map((p, i) =>
-                  p === '...' ? (
-                    <span key={`ellipsis-${i}`} className="pagination-ellipsis">…</span>
-                  ) : (
-                    <button
-                      key={p}
-                      id={`pagination-page-${p}`}
-                      className={`pagination-page ${page === p ? 'pagination-page-active' : ''}`}
-                      onClick={() => setPage(p as number)}
-                      aria-label={`Page ${p}`}
-                      aria-current={page === p ? 'page' : undefined}
-                    >
-                      {p}
-                    </button>
-                  )
+            {/* Infinite loading sentinel element */}
+            {!error && page < totalPages && (
+              <div ref={bottomRef} className="infinite-scroll-sentinel">
+                {isLoading && (
+                  <div className="infinite-scroll-loader">
+                    <div className="loader-spinner" />
+                    <span>Loading more movies...</span>
+                  </div>
                 )}
               </div>
-
-              <button
-                id="pagination-next"
-                className="pagination-btn"
-                onClick={() => setPage(Math.min(totalPages, page + 1))}
-                disabled={page === totalPages}
-                aria-label="Next page"
-              >
-                Next →
-              </button>
+            )}
+          </div>
+        ) : (
+          /* ── FLAT GRID VIEW (All Movies or search results) ── */
+          <section className="movies-section">
+            <div className="movies-section-header">
+              <h2 className="movies-section-title">{sectionTitle}</h2>
+              {!isLoading && !error && (
+                <span className="movies-section-count">
+                  Loaded up to Page {page}
+                </span>
+              )}
             </div>
-          )}
-        </section>
+
+            {error && (
+              <div className="error-state">
+                <p className="error-state-icon">⚠️</p>
+                <p className="error-state-message">{error}</p>
+                <button className="btn-retry" onClick={refresh}>Try Again</button>
+              </div>
+            )}
+
+            {/* Flat movie grid */}
+            <div className="movies-grid">
+              {movies.map((movie) => (
+                <MovieCard key={movie.id} movie={movie} />
+              ))}
+              {/* Skeletons for initial loading */}
+              {isLoading && page === 1 && !error && (
+                SKELETONS.map((_, i) => <SkeletonCard key={i} />)
+              )}
+            </div>
+
+            {/* Skeletons for subsequent pages (appended at the bottom of the grid) */}
+            {isLoading && page > 1 && (
+              <div className="movies-grid-append-loading">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <SkeletonCard key={`more-skeletons-${i}`} />
+                ))}
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!isLoading && !error && movies.length === 0 && (
+              <div className="empty-state">
+                <p className="empty-state-icon">🎬</p>
+                <p className="empty-state-message">No movies found. Try a different search.</p>
+              </div>
+            )}
+
+            {/* Infinite loading sentinel element */}
+            {!error && page < totalPages && (
+              <div ref={bottomRef} className="infinite-scroll-sentinel">
+                {!isLoading && <div style={{ height: '20px' }} />}
+              </div>
+            )}
+          </section>
+        )}
       </main>
 
       <Footer />
@@ -162,9 +232,3 @@ export default function HomePage() {
   );
 }
 
-function getPaginationRange(current: number, total: number): (number | '...')[] {
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-  if (current <= 4) return [1, 2, 3, 4, 5, '...', total];
-  if (current >= total - 3) return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
-  return [1, '...', current - 1, current, current + 1, '...', total];
-}
